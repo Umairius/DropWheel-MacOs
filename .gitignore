@@ -1,0 +1,22 @@
+# SwiftPM build output and caches
+.build/
+.swiftpm/
+Package.resolved
+
+# App bundles, DMGs, zips from build_app.sh / make_dmg.sh
+build/
+*.app
+*.dmg
+*.zip
+
+# Downloaded helper tools (ffmpeg, pandoc, ...)
+.cache/
+bin/
+*.part
+
+# Xcode / editor / OS junk
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+DerivedData/
+.DS_Store

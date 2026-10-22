@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:DropWheel-V1}",
+            "name": "Debug DropWheel",
+            "target": "DropWheel",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug DropWheel"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:DropWheel-V1}",
+            "name": "Release DropWheel",
+            "target": "DropWheel",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release DropWheel"
+        }
+    ]
+}
