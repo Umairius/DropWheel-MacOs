@@ -24,6 +24,9 @@ final class SignatureStore {
 
     private var payload = Payload()
     private let lock = NSLock()
+    /// A saved signature exists on disk, but macOS wouldn't give us the key to open it (the Keychain prompt was
+    /// denied). That's different from "nothing saved": we must not start over, overwrite it, or write a plaintext copy.
+    private var locked = false
     private let keychainService = "com.dropwheel.signature-key"
 
     private var encryptedFile: URL { Backends.appSupport.appendingPathComponent("signatures.dws") }
@@ -32,6 +35,20 @@ final class SignatureStore {
     private init() { load() }
 
     // MARK: Access
+
+    /// True when a saved signature is waiting behind a Keychain permission that was denied.
+    var isLocked: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return locked
+    }
+
+    /// Asks the Keychain again (macOS shows its prompt again). Returns true if the signature is now available.
+    @discardableResult
+    func retryUnlock() -> Bool {
+        guard isLocked else { return true }
+        load()
+        return !isLocked
+    }
 
     func ink(_ slot: SignSlot) -> Ink? {
         lock.lock(); defer { lock.unlock() }
@@ -76,14 +93,25 @@ final class SignatureStore {
 
     private func load() {
         let fm = FileManager.default
-        if fm.fileExists(atPath: encryptedFile.path),
-           let sealed = try? Data(contentsOf: encryptedFile),
-           let key = keychainKey(create: false),
-           let box = try? AES.GCM.SealedBox(combined: sealed),
-           let plain = try? AES.GCM.open(box, using: key),
-           let p = try? JSONDecoder().decode(Payload.self, from: plain) {
-            payload = p
-            return
+        lock.lock(); locked = false; lock.unlock()
+
+        if fm.fileExists(atPath: encryptedFile.path), let sealed = try? Data(contentsOf: encryptedFile) {
+            switch fetchKey() {
+            case .key(let key):
+                if let box = try? AES.GCM.SealedBox(combined: sealed),
+                   let plain = try? AES.GCM.open(box, using: key),
+                   let p = try? JSONDecoder().decode(Payload.self, from: plain) {
+                    payload = p
+                    return
+                }
+            case .denied:
+                // The signature is still there; macOS just wouldn't unlock it. Say so instead of
+                // pretending there is none, and don't fall back to some other copy.
+                lock.lock(); locked = true; lock.unlock()
+                return
+            case .missing:
+                break       // the key is gone for good: nothing to unlock
+            }
         }
         if let data = try? Data(contentsOf: plainFile), let p = try? JSONDecoder().decode(Payload.self, from: data) {
             payload = p
@@ -91,7 +119,10 @@ final class SignatureStore {
     }
 
     private func persist() {
-        lock.lock(); let snapshot = payload; lock.unlock()
+        lock.lock(); let snapshot = payload; let isLocked = locked; lock.unlock()
+        // Locked: the saved signature stays untouched on disk, and no plaintext copy is written beside it.
+        // Anything drawn meanwhile lives in memory for this session only.
+        if isLocked { return }
         guard let json = try? JSONEncoder().encode(snapshot) else { return }
         let fm = FileManager.default
         let attrs: [FileAttributeKey: Any] = [.posixPermissions: 0o600]
@@ -101,24 +132,52 @@ final class SignatureStore {
             try? fm.setAttributes(attrs, ofItemAtPath: encryptedFile.path)
             try? fm.removeItem(at: plainFile)
         } else {
+            // The Keychain refused while an encrypted signature exists: that's "locked", never a reason to
+            // write the signature out in plaintext.
+            if fm.fileExists(atPath: encryptedFile.path) {
+                lock.lock(); locked = true; lock.unlock()
+                return
+            }
             try? json.write(to: plainFile, options: .atomic)
             try? fm.setAttributes(attrs, ofItemAtPath: plainFile.path)
         }
     }
 
-    private func keychainKey(create: Bool) -> SymmetricKey? {
-        let base: [String: Any] = [
+    private enum KeyResult {
+        case key(SymmetricKey)
+        case missing        // no key stored yet
+        case denied         // a key exists, but macOS wouldn't hand it over (prompt denied, locked, no access)
+    }
+
+    private var keychainBase: [String: Any] {
+        [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
             kSecAttrAccount as String: "default",
         ]
-        var q = base
+    }
+
+    private func fetchKey() -> KeyResult {
+        var q = keychainBase
         q[kSecReturnData as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitOne
         var out: CFTypeRef?
         let status = SecItemCopyMatching(q as CFDictionary, &out)
-        if status == errSecSuccess, let data = out as? Data, data.count == 32 { return SymmetricKey(data: data) }
-        guard create, status == errSecItemNotFound else { return nil }
+        if status == errSecSuccess {
+            if let data = out as? Data, data.count == 32 { return .key(SymmetricKey(data: data)) }
+            return .missing
+        }
+        return status == errSecItemNotFound ? .missing : .denied
+    }
+
+    private func keychainKey(create: Bool) -> SymmetricKey? {
+        let base = keychainBase
+        switch fetchKey() {
+        case .key(let k): return k
+        case .denied: return nil
+        case .missing: break
+        }
+        guard create else { return nil }
 
         let key = SymmetricKey(size: .bits256)
         let data = key.withUnsafeBytes { Data($0) }

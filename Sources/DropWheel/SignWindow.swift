@@ -657,6 +657,22 @@ final class SignController: NSObject, NSWindowDelegate {
             if let ink = SignatureStore.shared.ink(.signature) {
                 placeFirst(with: ink)
             } else {
+                // A saved signature that macOS won't unlock is not the same as no signature: ask, don't start over.
+                if SignatureStore.shared.isLocked {
+                    switch SignUnlock.resolve(slot: .signature, allowSessionOnly: true) {
+                    case .unlocked:
+                        if let ink = SignatureStore.shared.ink(.signature) {
+                            placeFirst(with: ink)
+                            window.makeFirstResponder(canvas)
+                            return
+                        }
+                    case .sessionOnly:
+                        break
+                    case .cancelled:
+                        complete(nil)
+                        return
+                    }
+                }
                 SignaturePad.present(slot: .signature, from: window) { [self] ink in
                     guard let ink else { complete(nil); return }
                     placeFirst(with: ink)
@@ -802,11 +818,22 @@ final class SignController: NSObject, NSWindowDelegate {
     private func ensureInk(_ slot: SignSlot, _ done: @escaping (Ink) -> Void) {
         if let ink = SignatureStore.shared.ink(slot) {
             done(ink)
-        } else {
-            SignaturePad.present(slot: slot, from: window) { [weak self] ink in
-                if let ink { done(ink) }
-                self?.window.makeFirstResponder(self?.canvas)
+            return
+        }
+        if SignatureStore.shared.isLocked {
+            switch SignUnlock.resolve(slot: slot, allowSessionOnly: true) {
+            case .unlocked:
+                if let ink = SignatureStore.shared.ink(slot) { done(ink); return }
+            case .sessionOnly:
+                break
+            case .cancelled:
+                window.makeFirstResponder(canvas)
+                return
             }
+        }
+        SignaturePad.present(slot: slot, from: window) { [weak self] ink in
+            if let ink { done(ink) }
+            self?.window.makeFirstResponder(self?.canvas)
         }
     }
 
@@ -871,6 +898,8 @@ final class SignController: NSObject, NSWindowDelegate {
     }
 
     private func redraw(_ slot: SignSlot) {
+        // Redrawing replaces the saved one, so it must be unlocked first (otherwise nothing could be saved).
+        if SignatureStore.shared.isLocked, SignUnlock.resolve(slot: slot, allowSessionOnly: false) == .cancelled { return }
         SignaturePad.present(slot: slot, from: window, forceSave: true) { [weak self] ink in
             guard let self, let ink else { return }
             self.canvas.pushUndo()
@@ -954,9 +983,9 @@ final class SignController: NSObject, NSWindowDelegate {
             a.informativeText = outcome.problems.joined(separator: "\n")
                 + "\n\nThe signed copy is saved next to your original. Look at it before you send it."
             a.addButton(withTitle: "Keep it")
-            a.addButton(withTitle: "Delete it")
+            a.addButton(withTitle: "Move it to the Trash")
             if a.runModal() == .alertSecondButtonReturn {
-                try? FileManager.default.removeItem(at: outcome.output)
+                try? FileManager.default.trashItem(at: outcome.output, resultingItemURL: nil)
                 busy = false
                 signButton.isEnabled = true
                 refreshStatus()
@@ -1002,5 +1031,37 @@ final class SignController: NSObject, NSWindowDelegate {
         finished = nil
         f?(nil)
         SignController.live.removeAll { $0 === self }
+    }
+}
+
+
+// MARK: - Saved signature that macOS won't unlock
+
+/// Shown when a saved signature exists but the Keychain permission for it was denied. The old behaviour treated
+/// that as "no signature saved" and dropped you into the draw-your-signature screen.
+enum SignUnlock {
+    enum Outcome { case unlocked, sessionOnly, cancelled }
+
+    /// Call only when `SignatureStore.shared.isLocked`. Blocks until the person decides.
+    static func resolve(slot: SignSlot, allowSessionOnly: Bool) -> Outcome {
+        while true {
+            NSApp.activate(ignoringOtherApps: true)
+            let a = NSAlert()
+            a.alertStyle = .warning
+            a.messageText = "Your saved \(slot.title) is locked"
+            a.informativeText = "macOS asked whether DropWheel may use the key that protects it, and the answer was no. "
+                + "Nothing is lost: it's still stored, and it comes back as soon as you allow access.\n\n"
+                + "When macOS asks again, choose “Always Allow” so it stops asking."
+            a.addButton(withTitle: "Try Again")
+            if allowSessionOnly { a.addButton(withTitle: "Draw One for This Session Only") }
+            a.addButton(withTitle: "Cancel")
+            let r = a.runModal()
+            if r == .alertFirstButtonReturn {
+                if SignatureStore.shared.retryUnlock() { return .unlocked }
+                continue
+            }
+            if allowSessionOnly && r == .alertSecondButtonReturn { return .sessionOnly }
+            return .cancelled
+        }
     }
 }

@@ -54,7 +54,7 @@ enum MediaBackend {
 
     private static func ffmpeg(_ input: URL, to out: URL, args: [String]) throws {
         guard let exe = Tools.ffmpeg else { throw ConvError("DropWheel's video & audio tools aren't set up yet. Click the ◎ menu and choose “Finish setup…”.") }
-        try Shell.run(exe, ["-y", "-hide_banner", "-loglevel", "error", "-i", input.path] + args + [out.path],
+        try Shell.run(exe, ["-n", "-hide_banner", "-loglevel", "error", "-i", input.path] + args + [out.path],
                       timeout: 3600)
     }
 

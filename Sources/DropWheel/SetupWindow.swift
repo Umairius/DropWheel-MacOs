@@ -109,6 +109,8 @@ final class SetupController: NSObject, NSWindowDelegate, @unchecked Sendable {
     /// Menu-bar icon hooks.
     var onBegin: (() -> Void)?
     var onEnd: ((Bool) -> Void)?       // true = everything installed
+    /// Called after the window closes. true = setup finished and the person tapped "Got It".
+    var onDismiss: ((Bool) -> Void)?
 
     private enum Phase { case welcome, installing, done, failed }
     private enum RowState { case pending, active, done, failed }
@@ -249,8 +251,10 @@ final class SetupController: NSObject, NSWindowDelegate, @unchecked Sendable {
 
     func windowWillClose(_ notification: Notification) {
         probeGeneration += 1                   // drop any in-flight speed probe result
+        let finished = phase == .done
         if phase == .welcome { Settings.setupDeclined = true }
         if phase == .installing { task?.cancel(); phase = .failed }
+        DispatchQueue.main.async { [weak self] in self?.onDismiss?(finished) }
     }
 
     // MARK: Install sequence

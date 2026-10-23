@@ -9,6 +9,12 @@ enum PDFBackend {
         return doc
     }
 
+    /// Page count and lock state, for deciding what the wheel should offer. nil if it isn't a readable PDF.
+    static func info(_ url: URL) -> (pages: Int, locked: Bool)? {
+        guard let doc = PDFDocument(url: url) else { return nil }
+        return (doc.pageCount, doc.isLocked)
+    }
+
     static func uniqueFolder(_ url: URL) -> URL {
         var candidate = url
         var n = 1
@@ -46,7 +52,9 @@ enum PDFBackend {
 
     static func split(_ input: URL, near out: URL) throws -> URL {
         let doc = try open(input)
-        guard doc.pageCount > 1 else { throw ConvError("This PDF has only one page") }
+        guard doc.pageCount > 1 else {
+            throw ConvError("\(input.lastPathComponent) has only one page, so there's nothing to split.", notice: true)
+        }
         let folder = uniqueFolder(out.deletingPathExtension())
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let base = input.deletingPathExtension().lastPathComponent
@@ -83,7 +91,7 @@ enum PDFBackend {
         }
         if bytes(out) >= bytes(input) {
             try? FileManager.default.removeItem(at: out)
-            throw ConvError("Couldn't make this PDF any smaller (it's probably already optimized)")
+            throw ConvError("\(input.lastPathComponent) is already as small as it gets.", notice: true)
         }
     }
 

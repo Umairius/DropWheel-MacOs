@@ -6,7 +6,12 @@ import PDFKit
 
 struct ConvError: LocalizedError {
     let message: String
-    init(_ message: String) { self.message = message }
+    /// Not a failure: there was simply nothing to do ("already as small as it gets"). Shown calmly, no error sound.
+    let isNotice: Bool
+    init(_ message: String, notice: Bool = false) {
+        self.message = message
+        self.isNotice = notice
+    }
     var errorDescription: String? { message }
 }
 

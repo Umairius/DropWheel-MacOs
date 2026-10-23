@@ -308,6 +308,15 @@ enum Registry {
             found["sign"] = Target(id: "sign", label: "SIGN")
         }
 
+        // Don't offer what can't work. A one-page PDF can't be split; a locked PDF can't be split or shrunk.
+        if found["split"] != nil || found["compress"] != nil {
+            for (u, t) in zip(urls, types) where t == "pdf" {
+                guard let info = PDFBackend.info(u) else { continue }
+                if info.pages <= 1 || info.locked { found["split"] = nil }
+                if info.locked { found["compress"] = nil }
+            }
+        }
+
         func rank(_ t: Target) -> Int { displayOrder.firstIndex(of: t.id) ?? 999 }
         return found.values.sorted { (rank($0), $0.id) < (rank($1), $1.id) }
     }
@@ -316,6 +325,10 @@ enum Registry {
 struct ConversionResult {
     var outputs: [URL] = []
     var errors: [String] = []
+    /// Things that weren't failures, just "nothing to do" (already as small as it gets, a one-page PDF can't be split).
+    var notices: [String] = []
+    /// Originals that "Replace" moved to the Trash: where they were, and where they are now. Lets Undo restore them.
+    var trashed: [(original: URL, inTrash: URL)] = []
 }
 
 enum Converter {
@@ -365,7 +378,11 @@ enum Converter {
                 result.outputs.append(produced)
             } catch {
                 try? FileManager.default.removeItem(at: out)
-                result.errors.append(error.localizedDescription)
+                if let e = error as? ConvError, e.isNotice {
+                    result.notices.append(e.localizedDescription)
+                } else {
+                    result.errors.append(error.localizedDescription)
+                }
             }
             return result
         }
@@ -382,10 +399,20 @@ enum Converter {
                     throw ConvError("converter produced no file")
                 }
                 result.outputs.append(produced)
-                if replace && rec.isPureConversion { try? FileManager.default.trashItem(at: url, resultingItemURL: nil) }
+                let producedBytes = ((try? FileManager.default.attributesOfItem(atPath: produced.path))?[.size] as? Int) ?? 0
+                if replace && rec.isPureConversion && producedBytes > 0 {
+                    var trashed: NSURL?
+                    if (try? FileManager.default.trashItem(at: url, resultingItemURL: &trashed)) != nil, let t = trashed {
+                        result.trashed.append((original: url, inTrash: t as URL))
+                    }
+                }
             } catch {
                 try? FileManager.default.removeItem(at: out)
-                result.errors.append("\(url.lastPathComponent): \(error.localizedDescription)")
+                if let e = error as? ConvError, e.isNotice {
+                    result.notices.append(e.localizedDescription)
+                } else {
+                    result.errors.append("\(url.lastPathComponent): \(error.localizedDescription)")
+                }
             }
         }
         return result
